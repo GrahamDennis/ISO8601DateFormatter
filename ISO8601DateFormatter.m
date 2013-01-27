@@ -31,20 +31,22 @@ unichar ISO8601DefaultTimeSeparatorCharacter = DEFAULT_TIME_SEPARATOR;
 
 @end
 
-static NSMutableDictionary *timeZonesByOffset;
+static NSDictionary *timeZonesByOffset;
+static dispatch_queue_t globals_queue;
 
 @implementation ISO8601DateFormatter
 
 + (void) initialize {
 	if (!timeZonesByOffset) {
-		timeZonesByOffset = [[NSMutableDictionary alloc] init];
+		timeZonesByOffset = [[NSDictionary alloc] init];
+		globals_queue = dispatch_queue_create("ISO8601DateFormatter", DISPATCH_QUEUE_SERIAL);
 	}
 }
 
 + (void) purgeGlobalCaches {
-	NSMutableDictionary *oldCache = timeZonesByOffset;
-	timeZonesByOffset = nil;
-	[oldCache release];
+	NSDictionary *oldCache = timeZonesByOffset;
+	timeZonesByOffset = [[NSDictionary alloc] init];
+	dispatch_sync(globals_queue, ^{ [oldCache release]; });
 }
 
 - (NSCalendar *) makeCalendarWithDesiredConfiguration {
@@ -186,7 +188,7 @@ static BOOL is_leap_year(NSUInteger year);
 	NSAssert(timeSep != '\0', @"Time separator must not be NUL.");
 
 	BOOL isValidDate = ([string length] > 0U);
-	NSTimeZone *timeZone = nil;
+	__block NSTimeZone *timeZone = nil;
 
 	const unsigned char *ch = (const unsigned char *)[string UTF8String];
 
@@ -558,8 +560,15 @@ static BOOL is_leap_year(NSUInteger year);
 							timeZone = [timeZonesByOffset objectForKey:offsetNum];
 							if (!timeZone) {
 								timeZone = [NSTimeZone timeZoneForSecondsFromGMT:timeZoneOffset];
-								if (timeZone)
-									[timeZonesByOffset setObject:timeZone forKey:offsetNum];
+								if (timeZone) {
+									dispatch_sync(globals_queue, ^{
+										NSMutableDictionary *mutableTimeZonesByOffset = [timeZonesByOffset mutableCopy];
+										[mutableTimeZonesByOffset setObject:timeZone forKey:offsetNum];
+										[timeZonesByOffset release];
+										timeZonesByOffset = [mutableTimeZonesByOffset copy];
+										[mutableTimeZonesByOffset release];
+									});
+								}
 							}
 						}
 				}
